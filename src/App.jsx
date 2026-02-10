@@ -129,9 +129,7 @@ export default function App() {
 
   }, [rounds, participants]);
 
-  useEffect(() => {
-    console.log(grandTotal);
-  }, [grandTotal]);
+
   return (
     <div className="p-3" style={{ maxWidth: 1200, margin: "0 auto" }}>
       <div className="flex justify-content-between align-items-center mb-3">
