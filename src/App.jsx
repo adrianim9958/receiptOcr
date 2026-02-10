@@ -191,16 +191,35 @@ export default function App() {
 
 function ParticipantAdder({ onAdd }) {
   const [name, setName] = useState("");
+
   return (
     <div className="flex gap-2">
       <InputText
         value={name}
-        onChange={(e) => setName(e.target.value)}
-        placeholder="이름"
+        maxLength={3}
+        onChange={(e) => setName(e.target.value.slice(0, 3))}
+        placeholder="이름(최대 3글자)"
         className="w-full"
-        onKeyDown={(e) => e.key === "Enter" && onAdd(name) && setName("")}
+        onKeyDown={(e) => {
+          if (e.nativeEvent?.isComposing) return;
+          if (e.key === "Enter") {
+            e.preventDefault();
+            const v = name.trim();
+            if (!v) return;
+            onAdd(v);
+            setName("");
+          }
+        }}
       />
-      <Button icon="pi pi-plus" onClick={() => { onAdd(name); setName(""); }} />
+      <Button
+        icon="pi pi-plus"
+        onClick={() => {
+          const v = name.trim();
+          if (!v) return;
+          onAdd(v);
+          setName("");
+        }}
+      />
     </div>
   );
 }
