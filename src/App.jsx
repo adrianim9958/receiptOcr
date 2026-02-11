@@ -1,29 +1,59 @@
 import { useEffect, useMemo, useState } from "react";
 import { v4 as uuidv4 } from "uuid";
 import { Button } from "primereact/button";
-import { InputText } from "primereact/inputtext";
-import { Panel } from "primereact/panel";
-import { Message } from "primereact/message";
 import { TabView, TabPanel } from "primereact/tabview";
-import { DataTable } from "primereact/datatable";
-import { Column } from "primereact/column";
 
-import Round from "./Round";
+import Round from "./components/Round";
+import ParticipantManager from "./components/ParticipantManager";
+import SettlementPanel from "./components/SettlementPanel";
 import { computeSettlement } from "./utils/util";
 
-const STORAGE_KEY = "receipt_settle_state_v2"; // Changed to v2 for structure change
+const STORAGE_KEY = "receipt_settle_state_v2";
+
+const VEHICLE_EXPENSE_ITEMS = ["차량비", "주유비", "톨게이트비", "주차비"];
+
+function createDefaultRound(name, items = [], kind = "normal") {
+  return {
+    id: uuidv4(),
+    name,
+    kind, // "normal" | "vehicle"
+    items,
+    imageSrc: "",
+    rawText: "",
+    evidence: "",
+    payer: "",
+  };
+}
 
 export default function App() {
   const [rounds, setRounds] = useState([]);
   const [participants, setParticipants] = useState([]);
   const [activeRoundIndex, setActiveRoundIndex] = useState(0);
 
+  const normalizeRounds = (inputRounds) => {
+    const withKind = (inputRounds || []).map((r) => {
+      // Backward-compat: 기존에 만들어진 "차량이용" 차수 이름을 감지
+      const isVehicle = typeof r?.kind === "string"
+        ? r.kind === "vehicle"
+        : String(r?.name || "").includes("차량이용");
+      return {
+        ...r,
+        kind: isVehicle ? "vehicle" : "normal",
+      };
+    });
+
+    // 차량이용 탭을 항상 맨 앞으로
+    const vehicles = withKind.filter((r) => r.kind === "vehicle");
+    const normals = withKind.filter((r) => r.kind !== "vehicle");
+    return [...vehicles, ...normals];
+  };
+
   // Load state on mount
   useEffect(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
       if (saved) {
-        setRounds(saved.rounds || []);
+        setRounds(normalizeRounds(saved.rounds || []));
         setParticipants(saved.participants || []);
       } else {
         // Init with 1 round
@@ -41,25 +71,39 @@ export default function App() {
   }, [rounds, participants]);
 
   const addRound = (nameOverride) => {
-    const name = nameOverride || `${rounds.length + 1}차`;
-    setRounds(prev => {
-      const newRounds = [
-        ...prev,
-        {
-          id: uuidv4(),
-          name,
-          items: [],
-          imageSrc: "",
-          rawText: "",
-          evidence: "",
-          payer: ""
-        }
-      ];
-      // Set active index to the new round
-      // We need to do this in next render or trust the length
-      setActiveRoundIndex(newRounds.length - 1);
-      return newRounds;
+    setRounds((prev) => {
+      const prevNormalized = normalizeRounds(prev);
+      const normalCount = prevNormalized.filter((r) => r.kind !== "vehicle").length;
+      const name = nameOverride || `${normalCount + 1}차`;
+      return [...prevNormalized, createDefaultRound(name)];
     });
+    // 방금 추가한 (일반)차수로 이동: 차량이용 탭이 있으면 index가 +1 밀림
+    setActiveRoundIndex(rounds.some((r) => r.kind === "vehicle") ? rounds.length : rounds.length);
+  };
+
+  const addVehicleRound = () => {
+    setRounds((prev) => {
+      const prevNormalized = normalizeRounds(prev);
+
+      const existingIdx = prevNormalized.findIndex((r) => r.kind === "vehicle");
+      if (existingIdx >= 0) {
+        const existing = prevNormalized[existingIdx];
+        const rest = prevNormalized.filter((_, i) => i !== existingIdx);
+        return [existing, ...rest];
+      }
+
+      const items = VEHICLE_EXPENSE_ITEMS.map((label) => ({
+        id: uuidv4(),
+        name: label,
+        amount: 0,
+        assignees: [],
+      }));
+
+      const vehicleRound = createDefaultRound("차량이용", items, "vehicle");
+      return [vehicleRound, ...prevNormalized];
+    });
+    // 차량이용 탭은 항상 0번
+    setActiveRoundIndex(0);
   };
 
   const removeRound = (index) => {
@@ -83,51 +127,53 @@ export default function App() {
 
   const removeParticipant = (name) => {
     setParticipants(participants.filter(p => p !== name));
-    // Also remove from all rounds assignments if needed? 
-    // For now let's keep it simple, cleaner to remove from rounds too but maybe complex.
   };
 
-  // Grand Total Calculation
-  const grandTotal = useMemo(() => {
-    const summary = {}; // { person: { owed, paid, final } }
+  const clearAll = () => {
+    if (!window.confirm("전체 내역(차수·참여자)을 삭제하고 처음부터 시작할까요?")) return;
+    localStorage.removeItem(STORAGE_KEY);
+    setRounds([createDefaultRound("1차")]);
+    setParticipants([]);
+    setActiveRoundIndex(0);
+  };
 
-    // Init summary
-    participants.forEach(p => {
-      summary[p] = { owed: 0, paid: 0, final: 0 };
-    });
-
-    rounds.forEach(round => {
+  // Per-round settlement (single source of truth for settlement data)
+  const roundDetails = useMemo(() => {
+    return rounds.map((round, idx) => {
       const res = computeSettlement({
         items: round.items,
         participants,
-        payer: round.payer
+        payer: round.payer,
       });
+      return {
+        roundName: round.name,
+        roundIndex: idx,
+        total: res.total,
+        payer: round.payer,
+        rows: res.rows,
+      };
+    });
+  }, [rounds, participants]);
 
-      // Accumulate owed
-      res.rows.forEach(row => {
-        if (!summary[row.person]) summary[row.person] = { owed: 0, paid: 0, final: 0 };
+  // Grand total derived from roundDetails only
+  const grandTotal = useMemo(() => {
+    const summary = {};
+    participants.forEach((p) => {
+      summary[p] = { owed: 0, paid: 0 };
+    });
+    roundDetails.forEach((detail) => {
+      detail.rows.forEach((row) => {
         summary[row.person].owed += row.owed;
       });
-
-      // Accumulate paid (payer paid the total for this round)
-      if (round.payer) {
-        if (!summary[round.payer]) summary[round.payer] = { owed: 0, paid: 0, final: 0 };
-        summary[round.payer].paid += res.total;
-      }
+      if (detail.payer) summary[detail.payer].paid += detail.total;
     });
-
-    // Calc final transfer (positive = receive, negative = send)
-    // Actually our `computeSettlement` returns "payToPayer". 
-    // Here we want a global netting.
-
     return Object.entries(summary).map(([person, data]) => ({
       person,
       paid: data.paid,
       owed: data.owed,
-      net: data.paid - data.owed
+      net: data.paid - data.owed,
     }));
-
-  }, [rounds, participants]);
+  }, [participants, roundDetails]);
 
 
   return (
@@ -135,89 +181,63 @@ export default function App() {
       <div className="flex justify-content-between align-items-center mb-3">
         <h2 className="m-0">영수증 정산 (N차)</h2>
         <div className="flex gap-2">
-          <Button label="차수 추가" icon="pi pi-plus" onClick={() => addRound()} />
+          <Button label="차수 추가" icon="pi pi-plus" onClick={() => addRound()}
+            severity="info" size="small" />
+          <Button label="차량이용" icon="pi pi-car" onClick={addVehicleRound}
+            severity="help" size="small" />
+          <Button label="전체 내역 삭제" icon="pi pi-trash" onClick={() => clearAll()}
+            severity="danger" size="small" outlined />
         </div>
       </div>
 
       <div className="grid">
-        <div className="col-12 lg:col-3">
-          <Panel header="참여자 관리" className="mb-3">
-            <ParticipantAdder onAdd={addParticipant} />
-            <div className="flex gap-2 flex-wrap mt-2">
-              {participants.map(p => (
-                <div key={p} className="p-tag p-tag-rounded flex align-items-center">
-                  {p}
-                  <i className="pi pi-times ml-2 cursor-pointer"
-                    style={{ color: 'red', fontSize: '0.7rem' }}
-                    onClick={() => removeParticipant(p)} />
-                </div>
-              ))}
-            </div>
-          </Panel>
-
-          <Panel header="최종 정산 (모든 차수 합산)" className="mb-3">
-            <DataTable value={grandTotal} size="small" stripedRows>
-              <Column field="person" header="이름" />
-              <Column field="net" header="정산금" body={(r) => {
-                const val = r.net;
-                const color = val >= 0 ? 'text-primary' : 'text-pink-500';
-                const text = val >= 0 ? `받을 돈 ${val.toLocaleString()}` : `보낼 돈 ${Math.abs(val).toLocaleString()}`;
-                return <span className={`font-bold ${color}`}>{text}</span>
-              }} />
-            </DataTable>
-          </Panel>
+        <div
+          className="col-12 lg:col-4"
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            maxHeight: "calc(100vh - 7rem)",
+            minHeight: 0,
+          }}
+        >
+          <ParticipantManager
+            participants={participants}
+            onAdd={addParticipant}
+            onRemove={removeParticipant}
+          />
+          <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+            <SettlementPanel
+              rounds={rounds}
+              grandTotal={grandTotal}
+              roundDetails={roundDetails}
+            />
+          </div>
         </div>
 
-        <div className="col-12 lg:col-9">
-          <TabView activeIndex={activeRoundIndex} onTabChange={(e) => setActiveRoundIndex(e.index)}>
-            {rounds.map((round, idx) => (
-              <TabPanel key={round.id} header={round.name}>
-                <Round
-                  data={round}
-                  participants={participants}
-                  onUpdate={(newData) => updateRound(idx, newData)}
-                  onDelete={() => removeRound(idx)}
-                />
-              </TabPanel>
-            ))}
-          </TabView>
+        <div className="col-12 lg:col-8">
+          {rounds.length === 0 ? (
+            <div className="p-4 text-center text-color-secondary">
+              차수를 불러오는 중…
+            </div>
+          ) : (
+            <TabView
+              activeIndex={Math.min(activeRoundIndex, rounds.length - 1)}
+              onTabChange={(e) => setActiveRoundIndex(e.index)}
+            >
+              {rounds.map((round, idx) => (
+                <TabPanel key={round.id} header={round.name}>
+                  <Round
+                    data={round}
+                    participants={participants}
+                    onUpdate={(newData) => updateRound(idx, newData)}
+                    onDelete={() => removeRound(idx)}
+                  />
+                </TabPanel>
+              ))}
+            </TabView>
+          )}
         </div>
       </div>
-    </div>
-  );
-}
-
-function ParticipantAdder({ onAdd }) {
-  const [name, setName] = useState("");
-
-  return (
-    <div className="flex gap-2">
-      <InputText
-        value={name}
-        maxLength={3}
-        onChange={(e) => setName(e.target.value.slice(0, 3))}
-        placeholder="이름(최대 3글자)"
-        className="w-full"
-        onKeyDown={(e) => {
-          if (e.nativeEvent?.isComposing) return;
-          if (e.key === "Enter") {
-            e.preventDefault();
-            const v = name.trim();
-            if (!v) return;
-            onAdd(v);
-            setName("");
-          }
-        }}
-      />
-      <Button
-        icon="pi pi-plus"
-        onClick={() => {
-          const v = name.trim();
-          if (!v) return;
-          onAdd(v);
-          setName("");
-        }}
-      />
     </div>
   );
 }

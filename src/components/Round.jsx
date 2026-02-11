@@ -12,8 +12,22 @@ import { Panel } from "primereact/panel";
 import { Message } from "primereact/message";
 import { Image } from "primereact/image";
 
-import { fileToBase64Resized, extractTotalAmount, computeSettlement, callVisionAnnotate, normalizeReceiptLineOrder } from "./utils/util";
-import { extractLinesByGeometry } from "./utils/line";
+import { fileToBase64Resized, extractTotalAmount, computeSettlement, callVisionAnnotate, normalizeReceiptLineOrder } from "../utils/util";
+import { extractLinesByGeometry } from "../utils/line";
+
+/** 합계 행( isTotal ) 제외한 금액 합을 구하고, 합계 행 amount 를 initialAmount - otherSum 으로 갱신한 새 배열 반환 */
+function recalcSumRow(items) {
+    const nextItems = [...items];
+    const sumIdx = nextItems.findIndex((it) => it.isTotal);
+    if (sumIdx < 0) return nextItems;
+    const sumItem = nextItems[sumIdx];
+    const otherSum = nextItems.reduce(
+        (acc, it) => (it.isTotal ? acc : acc + (Number(it.amount) || 0)),
+        0
+    );
+    nextItems[sumIdx] = { ...sumItem, amount: (sumItem.initialAmount || 0) - otherSum };
+    return nextItems;
+}
 
 export default function Round({ data, participants, onUpdate, onDelete }) {
     const fileUploadRef = useRef(null);
@@ -54,8 +68,6 @@ export default function Round({ data, participants, onUpdate, onDelete }) {
 
             const rawLines = extractLinesByGeometry(full, { width, height });
             const lines = normalizeReceiptLineOrder(rawLines);
-            console.log("lines", lines);
-
             const { amount: total, evidence } = extractTotalAmount(lines);
 
             const newItems = [{
@@ -85,58 +97,22 @@ export default function Round({ data, participants, onUpdate, onDelete }) {
     const onCellEditComplete = (e) => {
         const { rowData, newValue, field } = e;
         if (rowData.isTotal) return;
-
-        const prevItems = [...items];
-        const nextItems = prevItems.map((it) =>
-            it.id === rowData.id ? { ...it, [field]: newValue } : it
+        const nextItems = recalcSumRow(
+            items.map((it) => (it.id === rowData.id ? { ...it, [field]: newValue } : it))
         );
-
-        // Auto-calc Sum row
-        const sumItemIndex = nextItems.findIndex(it => it.isTotal);
-        if (sumItemIndex >= 0) {
-            const sumItem = nextItems[sumItemIndex];
-            const otherSum = nextItems.reduce((acc, it) => {
-                if (it.isTotal) return acc;
-                return acc + (Number(it.amount) || 0);
-            }, 0);
-            const remain = (sumItem.initialAmount || 0) - otherSum;
-            nextItems[sumItemIndex] = { ...sumItem, amount: remain };
-        }
-
         update({ items: nextItems });
     };
 
     const addItem = () => {
-        const nextItems = [
+        const nextItems = recalcSumRow([
             ...items,
             { id: uuidv4(), name: "품목", amount: 0, assignees: [] },
-        ];
-        // Re-calc sum logic
-        const sumItemIndex = nextItems.findIndex(it => it.isTotal);
-        if (sumItemIndex >= 0) {
-            const sumItem = nextItems[sumItemIndex];
-            const otherSum = nextItems.reduce((acc, it) => {
-                if (it.isTotal) return acc;
-                return acc + (Number(it.amount) || 0);
-            }, 0);
-            nextItems[sumItemIndex] = { ...sumItem, amount: (sumItem.initialAmount || 0) - otherSum };
-        }
+        ]);
         update({ items: nextItems });
     };
 
     const deleteItem = (id) => {
-        const nextItems = items.filter((it) => it.id !== id);
-        // Re-calc sum logic
-        const sumItemIndex = nextItems.findIndex(it => it.isTotal);
-        if (sumItemIndex >= 0) {
-            const sumItem = nextItems[sumItemIndex];
-            const otherSum = nextItems.reduce((acc, it) => {
-                if (it.isTotal) return acc;
-                return acc + (Number(it.amount) || 0);
-            }, 0);
-            nextItems[sumItemIndex] = { ...sumItem, amount: (sumItem.initialAmount || 0) - otherSum };
-        }
-        update({ items: nextItems });
+        update({ items: recalcSumRow(items.filter((it) => it.id !== id)) });
     };
 
     // Panel collapse state
@@ -148,6 +124,7 @@ export default function Round({ data, participants, onUpdate, onDelete }) {
             setCollapsed(false);
         }
     }, [imageSrc]);
+
 
     return (
         <div className="p-2 border-1 surface-border border-round mb-4">

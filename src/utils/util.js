@@ -74,47 +74,7 @@ export function parseReceiptLines(text) {
 
 
 
-/** 결제자 1명이 전액 결제했다고 가정한 정산 */
-export function computeSettlement({ items, participants, payer }) {
-    const ps = participants.filter(Boolean);
-    const owed = Object.fromEntries(ps.map((p) => [p, 0]));
-
-    let total = 0;
-
-    for (const it of items || []) {
-        const amt = Math.round(Number(it.amount || 0));
-        if (!amt) continue;
-
-        total += amt;
-
-        const assigneesRaw = Array.isArray(it.assignees) ? it.assignees : [];
-        const assignees = assigneesRaw.length ? assigneesRaw.filter((a) => ps.includes(a)) : ps;
-
-        if (!assignees.length) continue;
-        const share = amt / assignees.length;
-
-        for (const a of assignees) owed[a] += share;
-    }
-
-    // 원 단위 반올림 + 결제자에게 오차 몰아주기
-    const rounded = {};
-    let sumRounded = 0;
-    for (const p of ps) {
-        rounded[p] = Math.round(owed[p]);
-        sumRounded += rounded[p];
-    }
-    const diff = total - sumRounded;
-    if (payer && rounded[payer] != null) rounded[payer] += diff;
-
-    const rows = ps.map((p) => ({
-        person: p,
-        owed: rounded[p] ?? 0,
-        payToPayer: p === payer ? 0 : Math.max(0, rounded[p] ?? 0),
-    }));
-
-    return { total, rows };
-}
-
+export { computeSettlement } from "./settlement.js";
 
 /**
  * 영수증 라인에서
@@ -243,60 +203,7 @@ export function extractTotalAmount(input) {
     return { amount: best.total, evidence: best.evidence };
 }
 
-
-
-
-
-// ✅ Vite에서도 동작하도록 보강 (너가 원하는 라인 유지)
-const IS_DEV =
-    (typeof process !== "undefined" &&
-        process.env &&
-        process.env.NODE_ENV === "development") ||
-    (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.DEV);
-
-async function callVisionAnnotateDirect(base64Content) {
-    const key = import.meta.env.VITE_GCV_API_KEY; // 로컬용(브라우저에서 직접)
-    if (!key) throw new Error("VITE_GCV_API_KEY가 없습니다. (.env 확인)");
-
-    const url = `https://vision.googleapis.com/v1/images:annotate?key=${encodeURIComponent(
-        key
-    )}`;
-
-    const r = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            requests: [
-                {
-                    image: { content: base64Content },
-                    features: [{ type: "DOCUMENT_TEXT_DETECTION" }],
-                },
-            ],
-        }),
-    });
-
-    const data = await r.json();
-    if (!r.ok) throw new Error(data?.error?.message || "Vision API 오류");
-    return data;
-}
-
-async function callVisionAnnotateNetlify(base64Content) {
-    const r = await fetch("/.netlify/functions/vision", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageBase64: base64Content }),
-    });
-
-    const data = await r.json();
-    if (!r.ok) throw new Error(data?.error?.message || "Netlify Function 오류");
-    return data;
-}
-
-export async function callVisionAnnotate(base64Content) {
-    return IS_DEV
-        ? callVisionAnnotateDirect(base64Content)
-        : callVisionAnnotateNetlify(base64Content);
-}
+export { callVisionAnnotate } from "./vision.js";
 
 export function normalizeReceiptLineOrder(lines) {
     return lines;
