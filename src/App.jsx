@@ -178,9 +178,11 @@ export default function App() {
 
   return (
     <div className="p-3" style={{ maxWidth: 1200, margin: "0 auto" }}>
-      <div className="flex justify-content-between align-items-center mb-3">
-        <h2 className="m-0">영수증 정산 (N차)</h2>
-        <div className="flex gap-2">
+      <div className="grid justify-content-between align-items-center mb-3">
+        <div className="col-12 lg:col-4">
+          <h2 className="m-0">영수증 정산 (N차)</h2>
+        </div>
+        <div className="col-12 lg:col-8 flex gap-2 justify-content-end">
           <Button label="차수 추가" icon="pi pi-plus" onClick={() => addRound()}
             severity="info" size="small" />
           <Button label="차량이용" icon="pi pi-car" onClick={addVehicleRound}
